@@ -238,3 +238,75 @@ The app has a **solid foundation** — the UI is polished, the data model is rea
 3. Sample data loader (immediate "aha" moment)
 
 These three changes could reduce TTFV from **20+ minutes to under 2 minutes**.
+
+---
+
+## Fixes Applied
+
+**Date:** 2026-02-11
+**Implemented by:** AI Subagent
+
+### 🔴 Critical (all addressed)
+
+1. **✅ First-run onboarding wizard** — Added `GET /api/status` endpoint + client-side `checkFirstRun()`. On first run (no prospects, no ICPs, no API key), shows a 3-option onboarding modal: Load Sample Data, Import CSV, or Search Apollo. Empty dashboard also shows CTAs and a setup checklist instead of all-zeros.
+
+2. **✅ Apollo prospect search UI** — Added "Search Apollo" button to prospects page header. Full search modal with keyword, title, location, company size filters. Results display in a selectable table. Users can add all/selected results with deduplication via new `POST /api/prospects/bulk` endpoint.
+
+3. **✅ Sample data loader** — Added `POST /api/sample-data` endpoint that loads 25 realistic sample prospects. Available from onboarding wizard and empty dashboard CTAs.
+
+4. **✅ Fixed `api()` error handling** — Now checks `r.ok`, parses error JSON from server, throws meaningful errors. All API call sites wrapped in try/catch with `toast()` error feedback.
+
+### 🟠 High Impact (all addressed)
+
+5. **✅ Prospect-to-campaign assignment** — Added "Add to Campaign" bulk action in prospects toolbar. New `POST /api/campaigns/:id/prospects` endpoint. Modal lets user pick target campaign.
+
+6. **✅ Removed fake enrichment providers** — Deleted `mockEnrich()` function entirely. Removed ContactOut, RocketReach, Hunter from settings UI, config defaults, and waterfall. Apollo is now the only provider. SKILL.md explicitly states this.
+
+7. **✅ Empty-state CTAs on dashboard** — When no prospects exist, dashboard shows action buttons (Load Samples, Import CSV, Search Apollo, Add Manually) + setup checklist with progress indicators.
+
+8. **✅ Campaigns marked as "coming soon"** — Added yellow banner on campaigns page and campaign detail: "Email sending coming soon — You can plan sequences now." Removed fake campaign stats display. SKILL.md explicitly warns AI not to tell users emails are being sent.
+
+9. **✅ Template picker for campaign steps** — "Add Step" modal now includes a dropdown to load subject/body from existing templates.
+
+### 🟡 Medium Impact
+
+10. **✅ Prospect deduplication on import** — CSV import now deduplicates by email against existing prospects. Returns `{ imported, duplicates }`. UI shows "X duplicates skipped" in toast.
+
+11. **✅ Apollo API key validation** — Added `POST /api/config/validate-apollo` endpoint + "Test Key" button in settings. Shows green ✓ or red ✗ with error message.
+
+12. **✅ Loading states** — Added `showLoading()` with spinner for all page transitions (dashboard, prospects, ICPs, campaigns, templates, settings).
+
+13. **✅ Fixed CSV preview** — Replaced naive comma-split with quote-aware CSV parser in the client preview function. Server-side already used `csv-parse`.
+
+14. **✅ Keyboard shortcuts** — Added `Ctrl+K` to focus search. Added `Escape` to close modals.
+
+15. **✅ Made inline editing discoverable** — Added `title="Double-click to edit"` tooltip on editable cells.
+
+### 🟢 Lower Impact / Code Quality
+
+16. **✅ Fixed JSON file write race conditions** — Added `withLock()` async mutex around all `saveJson` calls. Each JSON file has its own lock.
+
+17. **✅ Fixed `saveJson` crash on write failure** — Added try/catch with error logging. Throws to caller instead of crashing process.
+
+18. **✅ Fixed `uid()` collision potential** — Added monotonic counter alongside `Date.now()` + random.
+
+19. **✅ Moved `require('node-fetch')` to top level** — No longer re-required inside functions.
+
+20. **✅ Fixed XSS in status badge** — Status value now escaped with `esc()` in the render function.
+
+21. **✅ Sort arrows hidden when not sorted** — Added `.sort-hidden` CSS class; arrows only appear on hover.
+
+22. **✅ Compressed BOOTSTRAP.md** — Reduced from ~1.5KB to 400 bytes. Points to SKILL.md for all details.
+
+23. **✅ Updated SKILL.md** — Added "Platform Status" section clearly listing what's real vs planned vs removed. Added error handling guidance, dashboard URL mention, volume limits, and all new API endpoints.
+
+24. **✅ Updated TOOLS.md** — Added all new endpoints (bulk add, campaign prospect assignment, validate key, status, sample data).
+
+### Not Addressed (lower priority / architectural)
+
+- **Authentication** — No auth added (would require design decisions about auth strategy)
+- **Pagination** — Frontend still loads all prospects (API supports it, but UI pagination not added)
+- **SQLite migration** — File locking addresses race conditions; SQLite would be a larger refactor
+- **ICP score breakdown** — Not added to detail sidebar
+- **Undo for deletes** — Not implemented
+- **Mobile table UX** — Still basic collapse behavior

@@ -12,7 +12,9 @@ const state = {
   sort: '', search: '', filterStatus: '', filterIcp: '',
   editingCell: null,
   detailProspect: null,
-  enrichingIds: new Set()
+  enrichingIds: new Set(),
+  loading: false,
+  onboardingDone: false
 };
 
 // Router
@@ -26,13 +28,23 @@ function route() {
 }
 window.addEventListener('hashchange', route);
 
-// API helpers
+// API helper with proper error handling
 async function api(url, opts = {}) {
   const o = { headers: { 'Content-Type': 'application/json' }, ...opts };
   if (o.body && typeof o.body === 'object' && !(o.body instanceof FormData)) o.body = JSON.stringify(o.body);
   if (o.body instanceof FormData) delete o.headers['Content-Type'];
-  const r = await fetch(url, o);
-  return r.json();
+  try {
+    const r = await fetch(url, o);
+    if (!r.ok) {
+      let errMsg = `Request failed (${r.status})`;
+      try { const errData = await r.json(); errMsg = errData.error || errMsg; } catch {}
+      throw new Error(errMsg);
+    }
+    return await r.json();
+  } catch (e) {
+    if (e.message.includes('Request failed')) throw e;
+    throw new Error('Network error — is the server running?');
+  }
 }
 
 function toast(msg, type = 'info') {
@@ -41,7 +53,11 @@ function toast(msg, type = 'info') {
   t.className = `toast toast-${type}`;
   t.textContent = msg;
   c.appendChild(t);
-  setTimeout(() => t.remove(), 3500);
+  setTimeout(() => t.remove(), 4000);
+}
+
+function showLoading(el) {
+  el.innerHTML = `<div class="loading-state"><div class="loading-spinner"></div><p>Loading...</p></div>`;
 }
 
 // SVG icons
@@ -73,7 +89,7 @@ const columns = [
   { key: 'companySize', label: 'Size', width: 80, editable: true },
   { key: 'linkedinUrl', label: 'LinkedIn', width: 160, editable: true, enrichField: true, render: (p) => p.linkedinUrl ? `<a href="${esc(p.linkedinUrl)}" target="_blank" style="color:var(--accent);text-decoration:none;font-size:11px">Profile</a>` : '' },
   { key: 'icpScore', label: 'Score', width: 60, render: (p) => { const s = p.icpScore||0; const c = s>=70?'high':s>=40?'mid':'low'; return `<span class="icp-score score-${c}">${s}</span>`; }},
-  { key: 'status', label: 'Status', width: 100, render: (p) => `<span class="status-badge status-${p.status}">${p.status}</span>` },
+  { key: 'status', label: 'Status', width: 100, render: (p) => `<span class="status-badge status-${esc(p.status)}">${esc(p.status)}</span>` },
   { key: 'enrichmentData', label: 'Source', width: 90, render: (p) => p.enrichmentData?.provider ? `<span style="font-size:11px;color:var(--text-dim)">${esc(p.enrichmentData.provider)}</span>` : '' },
 ];
 
@@ -93,10 +109,117 @@ async function render(page) {
   }
 }
 
+// ==================== ONBOARDING ====================
+async function checkFirstRun() {
+  try {
+    const status = await api('/api/status');
+    if (status.isFirstRun) {
+      showOnboarding();
+    }
+  } catch {}
+}
+
+function showOnboarding() {
+  const overlay = document.getElementById('modal-overlay');
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `
+    <div class="modal modal-lg onboarding-modal">
+      <div class="modal-body" style="padding:32px;text-align:center">
+        <div style="font-size:48px;margin-bottom:16px">🚀</div>
+        <h1 style="font-size:24px;font-weight:700;margin-bottom:8px">Welcome to Prospect Hub</h1>
+        <p style="color:var(--text-dim);margin-bottom:32px;font-size:14px">Your AI-powered prospecting and enrichment platform.<br>Let's get you set up in under 2 minutes.</p>
+        
+        <div class="onboarding-options">
+          <div class="onboarding-card" onclick="Onboarding.startWithSample()">
+            <div style="font-size:32px;margin-bottom:12px">📊</div>
+            <h3>Explore with Sample Data</h3>
+            <p>Load 25 sample prospects to see the platform in action. You can replace them with real data later.</p>
+            <button class="btn btn-primary" style="margin-top:12px">Load Sample Data</button>
+          </div>
+          <div class="onboarding-card" onclick="Onboarding.startWithCSV()">
+            <div style="font-size:32px;margin-bottom:12px">📁</div>
+            <h3>Import Your CSV</h3>
+            <p>Already have a prospect list? Upload it and start enriching immediately.</p>
+            <button class="btn" style="margin-top:12px">Import CSV</button>
+          </div>
+          <div class="onboarding-card" onclick="Onboarding.startWithSearch()">
+            <div style="font-size:32px;margin-bottom:12px">🔍</div>
+            <h3>Search for Prospects</h3>
+            <p>Use Apollo.io to search for prospects by title, company, and location.</p>
+            <button class="btn" style="margin-top:12px">Search Apollo</button>
+          </div>
+        </div>
+        
+        <div style="margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
+          <button class="btn" onclick="closeModal()" style="color:var(--text-dim)">Skip — I'll explore on my own</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+window.Onboarding = {
+  async startWithSample() {
+    closeModal();
+    showLoading(document.getElementById('page-content'));
+    try {
+      const result = await api('/api/sample-data', { method: 'POST' });
+      toast(`Loaded ${result.loaded} sample prospects!`, 'success');
+      render('prospects');
+    } catch (e) {
+      toast(e.message, 'error');
+      render('dashboard');
+    }
+  },
+  startWithCSV() {
+    closeModal();
+    location.hash = '#prospects';
+    setTimeout(() => ProspectHub.showImportModal(), 300);
+  },
+  startWithSearch() {
+    closeModal();
+    location.hash = '#prospects';
+    setTimeout(() => ProspectHub.showSearchModal(), 300);
+  }
+};
+
 // ==================== DASHBOARD ====================
 async function renderDashboard(el) {
-  state.analytics = await api('/api/analytics');
+  showLoading(el);
+  try {
+    state.analytics = await api('/api/analytics');
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load analytics: ${esc(e.message)}</p></div>`;
+    return;
+  }
   const a = state.analytics;
+  
+  // Empty dashboard with CTAs
+  if (a.total === 0) {
+    el.innerHTML = `
+      <div class="page-header"><h1>Dashboard</h1></div>
+      <div class="empty-dashboard">
+        <div style="text-align:center;padding:60px 24px 32px">
+          <div style="font-size:48px;margin-bottom:16px">📋</div>
+          <h2 style="font-size:20px;font-weight:600;margin-bottom:8px">No prospects yet</h2>
+          <p style="color:var(--text-dim);margin-bottom:32px">Get started by adding prospects to your pipeline</p>
+          <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="Onboarding.startWithSample()">📊 Load Sample Data</button>
+            <button class="btn" onclick="location.hash='#prospects';setTimeout(()=>ProspectHub.showImportModal(),300)">${icons.upload} Import CSV</button>
+            <button class="btn" onclick="location.hash='#prospects';setTimeout(()=>ProspectHub.showSearchModal(),300)">${icons.search} Search Apollo</button>
+            <button class="btn" onclick="location.hash='#prospects';setTimeout(()=>ProspectHub.showAddModal(),300)">${icons.plus} Add Manually</button>
+          </div>
+        </div>
+        <div class="dashboard-section" style="max-width:600px;margin:0 auto">
+          <h2>Quick Setup Checklist</h2>
+          <div class="setup-checklist" id="setup-checklist"></div>
+        </div>
+      </div>
+    `;
+    loadSetupChecklist();
+    return;
+  }
+
   const statuses = ['new','enriched','contacted','replied','qualified','disqualified'];
   const colors = { new:'#3b82f6', enriched:'#22c55e', contacted:'#eab308', replied:'#ff6b35', qualified:'#22c55e', disqualified:'#ef4444' };
   
@@ -126,15 +249,46 @@ async function renderDashboard(el) {
   `;
 }
 
+async function loadSetupChecklist() {
+  const el = document.getElementById('setup-checklist');
+  if (!el) return;
+  try {
+    const status = await api('/api/status');
+    const items = [
+      { done: status.hasApiKey, label: 'Add Apollo.io API key', action: "location.hash='#settings'", hint: 'Required for search & enrichment' },
+      { done: status.prospectCount > 0, label: 'Add your first prospects', action: "location.hash='#prospects'", hint: 'Import CSV, search Apollo, or add manually' },
+      { done: status.icpCount > 0, label: 'Define an Ideal Customer Profile', action: "location.hash='#icps'", hint: 'Score prospects against your target buyer' },
+      { done: false, label: 'Create email templates', action: "location.hash='#templates'", hint: 'Draft outreach emails with merge fields' },
+    ];
+    el.innerHTML = items.map(i => `
+      <div class="checklist-item ${i.done?'done':''}">
+        <span class="checklist-check">${i.done ? icons.check : ''}</span>
+        <div style="flex:1">
+          <div class="checklist-label">${i.label}</div>
+          <div class="checklist-hint">${i.hint}</div>
+        </div>
+        ${!i.done ? `<button class="btn btn-sm btn-primary" onclick="${i.action}">Set up</button>` : ''}
+      </div>
+    `).join('');
+  } catch {}
+}
+
 // ==================== PROSPECTS ====================
 async function renderProspects(el) {
-  await loadProspects();
-  await loadICPs();
+  showLoading(el);
+  try {
+    await loadProspects();
+    await loadICPs();
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load: ${esc(e.message)}</p></div>`;
+    return;
+  }
   
   el.innerHTML = `
     <div class="page-header">
       <h1>Prospects</h1>
       <div class="page-header-actions">
+        <button class="btn" onclick="ProspectHub.showSearchModal()">${icons.search} Search Apollo</button>
         <button class="btn" onclick="ProspectHub.showImportModal()">${icons.upload} Import CSV</button>
         <button class="btn btn-primary" onclick="ProspectHub.showAddModal()">${icons.plus} Add Prospect</button>
       </div>
@@ -160,6 +314,7 @@ async function renderProspects(el) {
     <div class="bulk-toolbar ${state.selectedIds.size?'':'hidden'}" id="bulk-toolbar">
       <span>${state.selectedIds.size} selected</span>
       <button class="btn btn-sm btn-primary" onclick="ProspectHub.enrichSelected()">${icons.enrich} Enrich</button>
+      <button class="btn btn-sm" onclick="ProspectHub.addToCampaign()">${icons.campaign} Add to Campaign</button>
       <button class="btn btn-sm" onclick="ProspectHub.exportSelected()">${icons.download} Export CSV</button>
       <button class="btn btn-sm btn-danger" onclick="ProspectHub.deleteSelected()">${icons.trash} Delete</button>
       <button class="btn btn-sm" onclick="ProspectHub.clearSelection()">${icons.close} Clear</button>
@@ -174,7 +329,7 @@ async function renderProspects(el) {
             return `<th class="${sorted?'sorted':''}" style="min-width:${c.width}px">
               <div class="th-inner" onclick="ProspectHub.onSort('${c.key}')">
                 ${esc(c.label)}
-                <span class="sort-arrow">${sorted?(desc?icons.arrowDown:icons.arrowUp):icons.arrowUp}</span>
+                <span class="sort-arrow ${sorted?'':'sort-hidden'}">${sorted?(desc?icons.arrowDown:icons.arrowUp):''}</span>
               </div>
               <div class="resize-handle"></div>
             </th>`;
@@ -191,7 +346,14 @@ async function renderProspects(el) {
 
 function renderProspectRows() {
   if (!state.prospects.length) {
-    return `<tr><td colspan="${columns.length+2}" style="text-align:center;padding:40px;color:var(--text-muted)">No prospects yet. Import a CSV or add manually.</td></tr>`;
+    return `<tr><td colspan="${columns.length+2}" style="text-align:center;padding:40px;color:var(--text-muted)">
+      <p style="margin-bottom:12px">No prospects yet</p>
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button class="btn btn-primary btn-sm" onclick="ProspectHub.showSearchModal()">${icons.search} Search Apollo</button>
+        <button class="btn btn-sm" onclick="ProspectHub.showImportModal()">${icons.upload} Import CSV</button>
+        <button class="btn btn-sm" onclick="Onboarding.startWithSample()">📊 Load Samples</button>
+      </div>
+    </td></tr>`;
   }
   return state.prospects.map(p => {
     const sel = state.selectedIds.has(p.id);
@@ -205,19 +367,18 @@ function renderProspectRows() {
         } else {
           content = esc(p[c.key] || '');
         }
-        // Enrichment cell status
         let cellClass = '';
         if (c.enrichField) {
           if (enriching) content = '<span class="enrich-spinner"></span>';
           else if (p[c.key]) cellClass = p.enrichmentData?.fields?.[c.key] ? 'cell-verified' : '';
           else cellClass = 'cell-missing';
         }
-        const editable = c.editable && !enriching ? `ondblclick="ProspectHub.startEdit('${p.id}','${c.key}',this)"` : '';
+        const editable = c.editable && !enriching ? `ondblclick="ProspectHub.startEdit('${p.id}','${c.key}',this)" title="Double-click to edit"` : '';
         return `<td class="${cellClass}" ${editable}>${content}</td>`;
       }).join('')}
       <td>
-        <button class="row-action-btn" onclick="ProspectHub.enrichOne('${p.id}')" title="Enrich">${icons.enrich}</button>
-        <button class="row-action-btn" onclick="ProspectHub.showDetail('${p.id}')" title="Detail">${icons.edit}</button>
+        <button class="row-action-btn" onclick="ProspectHub.enrichOne('${p.id}')" title="Enrich with Apollo">${icons.enrich}</button>
+        <button class="row-action-btn" onclick="ProspectHub.showDetail('${p.id}')" title="View details">${icons.edit}</button>
       </td>
     </tr>`;
   }).join('');
@@ -243,19 +404,25 @@ window.ProspectHub = {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(async () => {
       state.search = val;
-      await loadProspects();
-      document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+      try {
+        await loadProspects();
+        document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+      } catch (e) { toast(e.message, 'error'); }
     }, 300);
   },
   async onFilterStatus(val) {
     state.filterStatus = val;
-    await loadProspects();
-    document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+    try {
+      await loadProspects();
+      document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+    } catch (e) { toast(e.message, 'error'); }
   },
   async onFilterIcp(val) {
     state.filterIcp = val;
-    await loadProspects();
-    document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+    try {
+      await loadProspects();
+      document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+    } catch (e) { toast(e.message, 'error'); }
   },
   onSort(key) {
     if (state.sort === key) state.sort = '-' + key;
@@ -286,11 +453,13 @@ window.ProspectHub = {
     state.enrichingIds.add(id);
     document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
     try {
-      await api('/api/prospects/enrich', { method: 'POST', body: { prospectIds: [id] } });
-      toast('Enrichment complete', 'success');
-    } catch(e) { toast('Enrichment failed', 'error'); }
+      const result = await api('/api/prospects/enrich', { method: 'POST', body: { prospectIds: [id] } });
+      const r = result.results?.[0];
+      if (r?.error) toast(`Enrichment: ${r.error}`, 'error');
+      else toast('Enrichment complete', 'success');
+    } catch(e) { toast(e.message, 'error'); }
     state.enrichingIds.delete(id);
-    await loadProspects();
+    try { await loadProspects(); } catch {}
     document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
   },
   async enrichSelected() {
@@ -299,23 +468,28 @@ window.ProspectHub = {
     ids.forEach(id => state.enrichingIds.add(id));
     document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
     try {
-      await api('/api/prospects/enrich', { method: 'POST', body: { prospectIds: ids } });
-      toast(`Enriched ${ids.length} prospects`, 'success');
-    } catch(e) { toast('Enrichment failed', 'error'); }
+      const result = await api('/api/prospects/enrich', { method: 'POST', body: { prospectIds: ids } });
+      const errors = result.results?.filter(r => r.error) || [];
+      if (errors.length === ids.length) toast('Enrichment failed for all prospects', 'error');
+      else if (errors.length) toast(`Enriched ${ids.length - errors.length}/${ids.length} (${errors.length} failed)`, 'info');
+      else toast(`Enriched ${ids.length} prospects`, 'success');
+    } catch(e) { toast(e.message, 'error'); }
     ids.forEach(id => state.enrichingIds.delete(id));
     state.selectedIds.clear();
-    await loadProspects();
+    try { await loadProspects(); } catch {}
     render('prospects');
   },
   async deleteSelected() {
     const ids = [...state.selectedIds];
     if (!ids.length) return;
     if (!confirm(`Delete ${ids.length} prospects?`)) return;
-    await api('/api/prospects', { method: 'DELETE', body: { ids } });
-    state.selectedIds.clear();
-    toast(`Deleted ${ids.length} prospects`, 'success');
-    await loadProspects();
-    render('prospects');
+    try {
+      await api('/api/prospects', { method: 'DELETE', body: { ids } });
+      state.selectedIds.clear();
+      toast(`Deleted ${ids.length} prospects`, 'success');
+      await loadProspects();
+      render('prospects');
+    } catch (e) { toast(e.message, 'error'); }
   },
   exportSelected() {
     const ids = state.selectedIds.size ? [...state.selectedIds] : null;
@@ -330,6 +504,42 @@ window.ProspectHub = {
     a.click();
     toast('CSV exported', 'success');
   },
+
+  // Add to Campaign bulk action
+  async addToCampaign() {
+    const ids = [...state.selectedIds];
+    if (!ids.length) return;
+    try {
+      state.campaigns = await api('/api/campaigns');
+    } catch (e) { toast(e.message, 'error'); return; }
+    if (!state.campaigns.length) {
+      toast('No campaigns yet — create one first', 'error');
+      return;
+    }
+    showModal('Add to Campaign', `
+      <p style="margin-bottom:12px;color:var(--text-dim)">${ids.length} prospect${ids.length!==1?'s':''} selected</p>
+      <div class="form-group"><label>Select Campaign</label>
+        <select id="assign-campaign">
+          ${state.campaigns.map(c => `<option value="${c.id}">${esc(c.name)} (${c.status})</option>`).join('')}
+        </select>
+      </div>
+    `, [
+      { label: 'Cancel', action: 'closeModal()' },
+      { label: 'Add to Campaign', primary: true, action: 'ProspectHub.doAddToCampaign()' }
+    ]);
+  },
+  async doAddToCampaign() {
+    const ids = [...state.selectedIds];
+    const campId = document.getElementById('assign-campaign').value;
+    try {
+      const result = await api(`/api/campaigns/${campId}/prospects`, { method: 'POST', body: { prospectIds: ids } });
+      closeModal();
+      state.selectedIds.clear();
+      toast(`Added ${result.added} prospects to campaign (${result.total} total)`, 'success');
+      render('prospects');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
   startEdit(id, key, td) {
     const p = state.prospects.find(x => x.id === id);
     if (!p) return;
@@ -338,10 +548,12 @@ window.ProspectHub = {
     td.querySelector('input').focus();
   },
   async finishEdit(id, key, input) {
-    if (input.dataset.cancel) { await loadProspects(); document.getElementById('prospect-tbody').innerHTML = renderProspectRows(); return; }
+    if (input.dataset.cancel) { try { await loadProspects(); } catch {}; document.getElementById('prospect-tbody').innerHTML = renderProspectRows(); return; }
     const val = input.value;
-    await api(`/api/prospects/${id}`, { method: 'PUT', body: { [key]: val } });
-    await loadProspects();
+    try {
+      await api(`/api/prospects/${id}`, { method: 'PUT', body: { [key]: val } });
+      await loadProspects();
+    } catch (e) { toast(e.message, 'error'); }
     document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
   },
   showDetail(id) {
@@ -369,7 +581,7 @@ window.ProspectHub = {
         </div>
         <div class="detail-section">
           <h3>Pipeline</h3>
-          ${detailField('Status', `<span class="status-badge status-${p.status}">${p.status}</span>`)}
+          ${detailField('Status', `<span class="status-badge status-${esc(p.status)}">${esc(p.status)}</span>`)}
           ${detailField('ICP Score', p.icpScore||0)}
           ${detailField('ICP', state.icps.find(i=>i.id===p.icpId)?.name || 'None')}
         </div>
@@ -400,18 +612,22 @@ window.ProspectHub = {
     `;
   },
   closeDetail,
-  async saveNotes(id, val) { await api(`/api/prospects/${id}`, { method: 'PUT', body: { notes: val } }); },
+  async saveNotes(id, val) { try { await api(`/api/prospects/${id}`, { method: 'PUT', body: { notes: val } }); } catch (e) { toast(e.message, 'error'); } },
   async updateStatus(id, val) {
-    await api(`/api/prospects/${id}`, { method: 'PUT', body: { status: val } });
-    await loadProspects();
-    document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
-    this.showDetail(id);
+    try {
+      await api(`/api/prospects/${id}`, { method: 'PUT', body: { status: val } });
+      await loadProspects();
+      document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+      this.showDetail(id);
+    } catch (e) { toast(e.message, 'error'); }
   },
   async assignIcp(id, val) {
-    await api(`/api/prospects/${id}`, { method: 'PUT', body: { icpId: val } });
-    await loadProspects();
-    document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
-    this.showDetail(id);
+    try {
+      await api(`/api/prospects/${id}`, { method: 'PUT', body: { icpId: val } });
+      await loadProspects();
+      document.getElementById('prospect-tbody').innerHTML = renderProspectRows();
+      this.showDetail(id);
+    } catch (e) { toast(e.message, 'error'); }
   },
 
   // Add prospect modal
@@ -433,14 +649,16 @@ window.ProspectHub = {
   },
   async doAdd() {
     const g = id => document.getElementById(id)?.value || '';
-    await api('/api/prospects', { method: 'POST', body: {
-      firstName: g('add-fn'), lastName: g('add-ln'), email: g('add-email'),
-      title: g('add-title'), company: g('add-company'), phone: g('add-phone'),
-      linkedinUrl: g('add-linkedin'), location: g('add-location'), industry: g('add-industry')
-    }});
-    closeModal();
-    toast('Prospect added', 'success');
-    render('prospects');
+    try {
+      await api('/api/prospects', { method: 'POST', body: {
+        firstName: g('add-fn'), lastName: g('add-ln'), email: g('add-email'),
+        title: g('add-title'), company: g('add-company'), phone: g('add-phone'),
+        linkedinUrl: g('add-linkedin'), location: g('add-location'), industry: g('add-industry')
+      }});
+      closeModal();
+      toast('Prospect added', 'success');
+      render('prospects');
+    } catch (e) { toast(e.message, 'error'); }
   },
 
   // Import CSV modal
@@ -461,11 +679,29 @@ window.ProspectHub = {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (e) => {
-      const lines = e.target.result.split('\n').slice(0, 6);
+      const text = e.target.result;
+      // Use proper CSV-aware preview (handle quoted fields)
+      const lines = [];
+      let current = '', inQuotes = false, row = [], lineCount = 0;
+      for (let i = 0; i <= text.length && lineCount < 6; i++) {
+        const ch = text[i];
+        if (ch === '"') { inQuotes = !inQuotes; continue; }
+        if ((ch === ',' && !inQuotes) || ch === '\n' || ch === '\r' || i === text.length) {
+          if (ch === ',' && !inQuotes) { row.push(current.trim()); current = ''; continue; }
+          if (ch === '\n' || ch === '\r' || i === text.length) {
+            row.push(current.trim());
+            if (row.some(c => c)) { lines.push(row); lineCount++; }
+            row = []; current = '';
+            if (ch === '\r' && text[i+1] === '\n') i++;
+            continue;
+          }
+        }
+        if (ch !== undefined) current += ch;
+      }
       const preview = document.getElementById('csv-preview');
-      preview.innerHTML = `<div style="color:var(--text-dim);margin-bottom:8px">${file.name} — Preview (first 5 rows)</div>
-        <table class="enrich-table" style="font-size:11px">${lines.map((l,i) => 
-          `<tr>${l.split(',').map(c => `<${i===0?'th':'td'} style="padding:4px 8px;border:1px solid var(--border)">${esc(c.replace(/^"|"$/g,'').trim())}</${i===0?'th':'td'}>`).join('')}</tr>`
+      preview.innerHTML = `<div style="color:var(--text-dim);margin-bottom:8px">${esc(file.name)} — Preview (first ${Math.min(lines.length-1, 5)} rows)</div>
+        <table class="enrich-table" style="font-size:11px">${lines.map((cols,i) => 
+          `<tr>${cols.map(c => `<${i===0?'th':'td'} style="padding:4px 8px;border:1px solid var(--border)">${esc(c)}</${i===0?'th':'td'}>`).join('')}</tr>`
         ).join('')}</table>`;
     };
     reader.readAsText(file);
@@ -475,10 +711,87 @@ window.ProspectHub = {
     if (!file) { toast('Select a CSV file', 'error'); return; }
     const fd = new FormData();
     fd.append('file', file);
-    const result = await api('/api/prospects/import', { method: 'POST', body: fd });
-    closeModal();
-    toast(`Imported ${result.imported} prospects`, 'success');
-    render('prospects');
+    try {
+      const result = await api('/api/prospects/import', { method: 'POST', body: fd });
+      closeModal();
+      let msg = `Imported ${result.imported} prospects`;
+      if (result.duplicates) msg += ` (${result.duplicates} duplicates skipped)`;
+      toast(msg, 'success');
+      render('prospects');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+
+  // Apollo Search Modal
+  showSearchModal() {
+    showModal('Search Apollo for Prospects', `
+      <p style="margin-bottom:16px;color:var(--text-dim);font-size:12px">Search Apollo.io's database to find prospects. Requires an Apollo API key (set in Settings).</p>
+      <div class="form-group"><label>Keywords (role, skill, etc.)</label><input type="text" id="search-query" placeholder="e.g. VP Sales, machine learning"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group"><label>Job Titles (comma separated)</label><input type="text" id="search-titles" placeholder="e.g. VP Sales, Director"></div>
+        <div class="form-group"><label>Locations (comma separated)</label><input type="text" id="search-locations" placeholder="e.g. San Francisco, New York"></div>
+      </div>
+      <div class="form-group"><label>Company Sizes</label><input type="text" id="search-sizes" placeholder="e.g. 1,10 or 11,50 or 51,200"></div>
+      <div id="search-results" style="max-height:400px;overflow-y:auto;margin-top:16px"></div>
+    `, [
+      { label: 'Cancel', action: 'closeModal()' },
+      { label: 'Search', primary: true, action: 'ProspectHub.doSearch()' }
+    ], 'modal-lg');
+  },
+  async doSearch() {
+    const resultsEl = document.getElementById('search-results');
+    resultsEl.innerHTML = '<div class="loading-state" style="padding:24px"><div class="loading-spinner"></div><p>Searching Apollo...</p></div>';
+    const split = v => v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
+    try {
+      const data = await api('/api/search', { method: 'POST', body: {
+        query: document.getElementById('search-query').value,
+        filters: {
+          titles: split(document.getElementById('search-titles').value),
+          locations: split(document.getElementById('search-locations').value),
+          companySizes: split(document.getElementById('search-sizes').value)
+        }
+      }});
+      if (!data.people?.length) {
+        resultsEl.innerHTML = '<p style="color:var(--text-dim);text-align:center;padding:20px">No results found. Try broader search terms.</p>';
+        return;
+      }
+      // Store results for adding
+      window._searchResults = data.people;
+      resultsEl.innerHTML = `
+        <div style="margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:12px;color:var(--text-dim)">${data.total} results found (showing ${data.people.length})</span>
+          <button class="btn btn-sm btn-primary" onclick="ProspectHub.addAllSearchResults()">Add All ${data.people.length}</button>
+        </div>
+        <table class="enrich-table" style="font-size:12px">
+          <thead><tr><th style="padding:6px 8px"><input type="checkbox" checked onchange="document.querySelectorAll('.sr-cb').forEach(c=>c.checked=this.checked)"></th><th style="padding:6px 8px">Name</th><th style="padding:6px 8px">Title</th><th style="padding:6px 8px">Company</th><th style="padding:6px 8px">Location</th></tr></thead>
+          <tbody>
+            ${data.people.map((p, i) => `<tr>
+              <td style="padding:4px 8px"><input type="checkbox" class="sr-cb" checked data-idx="${i}"></td>
+              <td style="padding:4px 8px">${esc(p.firstName)} ${esc(p.lastName)}</td>
+              <td style="padding:4px 8px">${esc(p.title)}</td>
+              <td style="padding:4px 8px">${esc(p.company)}</td>
+              <td style="padding:4px 8px">${esc(p.location)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      `;
+    } catch (e) {
+      resultsEl.innerHTML = `<p style="color:var(--red);padding:20px;text-align:center">${esc(e.message)}</p>`;
+    }
+  },
+  async addAllSearchResults() {
+    if (!window._searchResults?.length) return;
+    const checked = [...document.querySelectorAll('.sr-cb:checked')].map(cb => parseInt(cb.dataset.idx));
+    const selected = checked.map(i => window._searchResults[i]).filter(Boolean);
+    if (!selected.length) { toast('No prospects selected', 'error'); return; }
+    try {
+      const result = await api('/api/prospects/bulk', { method: 'POST', body: { prospects: selected } });
+      closeModal();
+      let msg = `Added ${result.added} prospects`;
+      if (result.duplicates) msg += ` (${result.duplicates} duplicates skipped)`;
+      toast(msg, 'success');
+      delete window._searchResults;
+      render('prospects');
+    } catch (e) { toast(e.message, 'error'); }
   }
 };
 
@@ -502,8 +815,15 @@ function closeDetail() {
 
 // ==================== ICPs ====================
 async function renderICPs(el) {
-  state.icps = await api('/api/icps');
-  const prospects = (await api('/api/prospects')).prospects || [];
+  showLoading(el);
+  try {
+    state.icps = await api('/api/icps');
+    const prospectData = await api('/api/prospects');
+    var prospects = prospectData.prospects || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load: ${esc(e.message)}</p></div>`;
+    return;
+  }
   
   el.innerHTML = `
     <div class="page-header"><h1>Ideal Customer Profiles</h1>
@@ -526,7 +846,7 @@ async function renderICPs(el) {
             </div>
           </div>
         </div>`;
-      }).join('') : '<div class="empty-state"><p>No ICPs defined yet. Create your first ideal customer profile.</p></div>'}
+      }).join('') : '<div class="empty-state"><p>No ICPs defined yet. Create your first ideal customer profile to start scoring prospects.</p><button class="btn btn-primary" onclick="ICPHub.showAdd()" style="margin-top:8px">' + icons.plus + ' Create ICP</button></div>'}
     </div>
   `;
 }
@@ -539,7 +859,7 @@ window.ICPHub = {
     showModal(isEdit ? 'Edit ICP' : 'New ICP', `
       <div class="form-group"><label>Name</label><input type="text" id="icp-name" value="${esc(icp.name)}"></div>
       <div class="form-group"><label>Description</label><textarea id="icp-desc">${esc(icp.description)}</textarea></div>
-      <div class="form-group"><label>Color</label><div class="color-picker-row">${colors.map(c => `<div class="color-swatch ${c===icp.color?'selected':''}" style="background:${c}" onclick="document.querySelectorAll('.color-swatch').forEach(s=>s.classList.remove('selected'));this.classList.add('selected');this.dataset.sel='1'" data-color="${c}"></div>`).join('')}</div></div>
+      <div class="form-group"><label>Color</label><div class="color-picker-row">${colors.map(c => `<div class="color-swatch ${c===icp.color?'selected':''}" style="background:${c}" onclick="document.querySelectorAll('.color-swatch').forEach(s=>s.classList.remove('selected'));this.classList.add('selected')" data-color="${c}"></div>`).join('')}</div></div>
       <div class="form-group"><label>Industries (comma separated)</label><input type="text" id="icp-industries" value="${(icp.criteria.industries||[]).join(', ')}"></div>
       <div class="form-group"><label>Titles / Roles (comma separated)</label><input type="text" id="icp-titles" value="${(icp.criteria.titles||[]).join(', ')}"></div>
       <div class="form-group"><label>Locations (comma separated)</label><input type="text" id="icp-locations" value="${(icp.criteria.locations||[]).join(', ')}"></div>
@@ -552,8 +872,10 @@ window.ICPHub = {
   },
   async doAdd() {
     const data = getICPForm();
-    await api('/api/icps', { method: 'POST', body: data });
-    closeModal(); toast('ICP created', 'success'); render('icps');
+    try {
+      await api('/api/icps', { method: 'POST', body: data });
+      closeModal(); toast('ICP created', 'success'); render('icps');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async edit(id) {
     const icp = state.icps.find(i => i.id === id);
@@ -561,13 +883,17 @@ window.ICPHub = {
   },
   async doEdit(id) {
     const data = getICPForm();
-    await api(`/api/icps/${id}`, { method: 'PUT', body: data });
-    closeModal(); toast('ICP updated', 'success'); render('icps');
+    try {
+      await api(`/api/icps/${id}`, { method: 'PUT', body: data });
+      closeModal(); toast('ICP updated', 'success'); render('icps');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async del(id) {
     if (!confirm('Delete this ICP?')) return;
-    await api(`/api/icps/${id}`, { method: 'DELETE' });
-    toast('ICP deleted', 'success'); render('icps');
+    try {
+      await api(`/api/icps/${id}`, { method: 'DELETE' });
+      toast('ICP deleted', 'success'); render('icps');
+    } catch (e) { toast(e.message, 'error'); }
   }
 };
 
@@ -591,11 +917,20 @@ function getICPForm() {
 
 // ==================== CAMPAIGNS ====================
 async function renderCampaigns(el) {
-  state.campaigns = await api('/api/campaigns');
+  showLoading(el);
+  try {
+    state.campaigns = await api('/api/campaigns');
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load: ${esc(e.message)}</p></div>`;
+    return;
+  }
   
   el.innerHTML = `
     <div class="page-header"><h1>Campaigns</h1>
       <div class="page-header-actions"><button class="btn btn-primary" onclick="CampaignHub.showAdd()">${icons.plus} New Campaign</button></div>
+    </div>
+    <div class="coming-soon-banner">
+      <strong>📧 Email sending coming soon</strong> — You can plan campaign sequences now. Automated email delivery will be added in a future update.
     </div>
     <div class="campaign-list">
       ${state.campaigns.length ? state.campaigns.map(c => `
@@ -603,18 +938,13 @@ async function renderCampaigns(el) {
           <div class="campaign-info">
             <h3>${esc(c.name)}</h3>
             <div class="campaign-meta">
-              <span class="status-badge status-${c.status==='active'?'enriched':c.status==='paused'?'contacted':'new'}">${c.status}</span>
+              <span class="status-badge status-${c.status==='active'?'enriched':c.status==='paused'?'contacted':'new'}">${esc(c.status)}</span>
               <span>${c.steps?.length||0} steps</span>
               <span>${c.prospects?.length||0} prospects</span>
             </div>
           </div>
-          <div class="campaign-stats">
-            <span>Sent: <span class="campaign-stat-val">${c.stats?.sent||0}</span></span>
-            <span>Opened: <span class="campaign-stat-val">${c.stats?.opened||0}</span></span>
-            <span>Replied: <span class="campaign-stat-val">${c.stats?.replied||0}</span></span>
-          </div>
         </div>
-      `).join('') : '<div class="empty-state"><p>No campaigns yet. Create your first outreach sequence.</p></div>'}
+      `).join('') : '<div class="empty-state"><p>No campaigns yet. Create your first outreach sequence.</p><button class="btn btn-primary" onclick="CampaignHub.showAdd()" style="margin-top:8px">' + icons.plus + ' Create Campaign</button></div>'}
     </div>
   `;
 }
@@ -624,7 +954,7 @@ window.CampaignHub = {
     showModal('New Campaign', `
       <div class="form-group"><label>Campaign Name</label><input type="text" id="camp-name"></div>
       <div class="form-group"><label>ICP</label><select id="camp-icp">
-        <option value="">Select ICP</option>
+        <option value="">Select ICP (optional)</option>
         ${state.icps.map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join('')}
       </select></div>
     `, [
@@ -633,15 +963,21 @@ window.CampaignHub = {
     ]);
   },
   async doAdd() {
-    await api('/api/campaigns', { method: 'POST', body: {
-      name: document.getElementById('camp-name').value,
-      icpId: document.getElementById('camp-icp').value
-    }});
-    closeModal(); toast('Campaign created', 'success'); render('campaigns');
+    try {
+      await api('/api/campaigns', { method: 'POST', body: {
+        name: document.getElementById('camp-name').value,
+        icpId: document.getElementById('camp-icp').value
+      }});
+      closeModal(); toast('Campaign created', 'success'); render('campaigns');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async showDetail(id) {
     const c = state.campaigns.find(x => x.id === id);
     if (!c) return;
+
+    // Load templates for step picker
+    try { state.templates = await api('/api/templates'); } catch {}
+
     const el = document.getElementById('page-content');
     el.innerHTML = `
       <div class="page-header">
@@ -654,11 +990,8 @@ window.CampaignHub = {
         </div>
       </div>
       <div class="campaign-detail">
-        <div style="display:flex;gap:16px;margin-bottom:24px">
-          <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value">${c.stats?.sent||0}</div></div>
-          <div class="stat-card"><div class="stat-label">Opened</div><div class="stat-value">${c.stats?.opened||0}</div></div>
-          <div class="stat-card"><div class="stat-label">Replied</div><div class="stat-value">${c.stats?.replied||0}</div></div>
-          <div class="stat-card"><div class="stat-label">Bounced</div><div class="stat-value">${c.stats?.bounced||0}</div></div>
+        <div class="coming-soon-banner" style="margin-bottom:16px">
+          📧 Email sending is not yet connected. Sequences are saved for planning purposes.
         </div>
         <h2 style="font-size:14px;font-weight:600;margin-bottom:8px">Sequence Steps</h2>
         <div class="step-cards" id="step-cards">
@@ -674,12 +1007,19 @@ window.CampaignHub = {
         </div>
         <button class="btn" style="margin-top:12px" onclick="CampaignHub.addStep('${id}')">${icons.plus} Add Step</button>
         <h2 style="font-size:14px;font-weight:600;margin:24px 0 8px">Prospects (${c.prospects?.length||0})</h2>
-        <p style="font-size:12px;color:var(--text-dim)">Add prospects from the Prospects table using bulk select.</p>
+        <p style="font-size:12px;color:var(--text-dim)">Add prospects from the Prospects table using the bulk "Add to Campaign" action.</p>
       </div>
     `;
   },
   addStep(id) {
+    const templateOptions = state.templates.length 
+      ? `<div class="form-group"><label>Load from Template (optional)</label><select id="step-template" onchange="CampaignHub.loadTemplate()">
+          <option value="">Write from scratch</option>
+          ${state.templates.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.category)})</option>`).join('')}
+        </select></div>` : '';
+
     showModal('Add Step', `
+      ${templateOptions}
       <div class="form-group"><label>Delay (days from previous)</label><input type="number" id="step-delay" value="3" min="0"></div>
       <div class="form-group"><label>Subject</label><input type="text" id="step-subject" placeholder="Hi {first_name}, ..."></div>
       <div class="form-group"><label>Body</label><textarea id="step-body" rows="6" placeholder="Use {first_name}, {company}, {title} as merge fields..."></textarea></div>
@@ -689,6 +1029,15 @@ window.CampaignHub = {
       { label: 'Add Step', primary: true, action: `CampaignHub.doAddStep('${id}')` }
     ]);
   },
+  loadTemplate() {
+    const tplId = document.getElementById('step-template').value;
+    if (!tplId) return;
+    const tpl = state.templates.find(t => t.id === tplId);
+    if (tpl) {
+      document.getElementById('step-subject').value = tpl.subject;
+      document.getElementById('step-body').value = tpl.body;
+    }
+  },
   async doAddStep(id) {
     const c = state.campaigns.find(x => x.id === id);
     const steps = [...(c.steps||[]), {
@@ -697,34 +1046,48 @@ window.CampaignHub = {
       subject: document.getElementById('step-subject').value,
       body: document.getElementById('step-body').value
     }];
-    await api(`/api/campaigns/${id}`, { method: 'PUT', body: { steps } });
-    closeModal();
-    state.campaigns = await api('/api/campaigns');
-    this.showDetail(id);
+    try {
+      await api(`/api/campaigns/${id}`, { method: 'PUT', body: { steps } });
+      closeModal();
+      state.campaigns = await api('/api/campaigns');
+      this.showDetail(id);
+    } catch (e) { toast(e.message, 'error'); }
   },
   async removeStep(id, idx) {
     const c = state.campaigns.find(x => x.id === id);
     const steps = (c.steps||[]).filter((_,i) => i !== idx);
-    await api(`/api/campaigns/${id}`, { method: 'PUT', body: { steps } });
-    state.campaigns = await api('/api/campaigns');
-    this.showDetail(id);
+    try {
+      await api(`/api/campaigns/${id}`, { method: 'PUT', body: { steps } });
+      state.campaigns = await api('/api/campaigns');
+      this.showDetail(id);
+    } catch (e) { toast(e.message, 'error'); }
   },
   async updateStatus(id, status) {
-    await api(`/api/campaigns/${id}`, { method: 'PUT', body: { status } });
-    state.campaigns = await api('/api/campaigns');
-    toast('Campaign updated', 'success');
+    try {
+      await api(`/api/campaigns/${id}`, { method: 'PUT', body: { status } });
+      state.campaigns = await api('/api/campaigns');
+      toast('Campaign updated', 'success');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async del(id) {
     if (!confirm('Delete this campaign?')) return;
-    await api(`/api/campaigns/${id}`, { method: 'DELETE' });
-    toast('Campaign deleted', 'success');
-    render('campaigns');
+    try {
+      await api(`/api/campaigns/${id}`, { method: 'DELETE' });
+      toast('Campaign deleted', 'success');
+      render('campaigns');
+    } catch (e) { toast(e.message, 'error'); }
   }
 };
 
 // ==================== TEMPLATES ====================
 async function renderTemplates(el) {
-  state.templates = await api('/api/templates');
+  showLoading(el);
+  try {
+    state.templates = await api('/api/templates');
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load: ${esc(e.message)}</p></div>`;
+    return;
+  }
   
   el.innerHTML = `
     <div class="page-header"><h1>Email Templates</h1>
@@ -738,7 +1101,7 @@ async function renderTemplates(el) {
           <div style="font-size:11px;color:var(--text-dim);margin:4px 0">${esc(t.subject)}</div>
           <div class="template-preview">${esc(t.body)}</div>
         </div>
-      `).join('') : '<div class="empty-state"><p>No templates yet. Create your first email template.</p></div>'}
+      `).join('') : '<div class="empty-state"><p>No templates yet. Create your first email template.</p><button class="btn btn-primary" onclick="TemplateHub.showAdd()" style="margin-top:8px">' + icons.plus + ' Create Template</button></div>'}
     </div>
   `;
 }
@@ -762,38 +1125,50 @@ window.TemplateHub = {
     ].filter(Boolean), 'modal-lg');
   },
   async doAdd() {
-    await api('/api/templates', { method: 'POST', body: {
-      name: document.getElementById('tpl-name').value,
-      category: document.getElementById('tpl-cat').value,
-      subject: document.getElementById('tpl-subject').value,
-      body: document.getElementById('tpl-body').value,
-      mergeFields: ['first_name','last_name','company','title','industry']
-    }});
-    closeModal(); toast('Template created', 'success'); render('templates');
+    try {
+      await api('/api/templates', { method: 'POST', body: {
+        name: document.getElementById('tpl-name').value,
+        category: document.getElementById('tpl-cat').value,
+        subject: document.getElementById('tpl-subject').value,
+        body: document.getElementById('tpl-body').value,
+        mergeFields: ['first_name','last_name','company','title','industry']
+      }});
+      closeModal(); toast('Template created', 'success'); render('templates');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async edit(id) {
     const t = state.templates.find(x => x.id === id);
     if (t) this.showAdd(t);
   },
   async doEdit(id) {
-    await api(`/api/templates/${id}`, { method: 'PUT', body: {
-      name: document.getElementById('tpl-name').value,
-      category: document.getElementById('tpl-cat').value,
-      subject: document.getElementById('tpl-subject').value,
-      body: document.getElementById('tpl-body').value
-    }});
-    closeModal(); toast('Template updated', 'success'); render('templates');
+    try {
+      await api(`/api/templates/${id}`, { method: 'PUT', body: {
+        name: document.getElementById('tpl-name').value,
+        category: document.getElementById('tpl-cat').value,
+        subject: document.getElementById('tpl-subject').value,
+        body: document.getElementById('tpl-body').value
+      }});
+      closeModal(); toast('Template updated', 'success'); render('templates');
+    } catch (e) { toast(e.message, 'error'); }
   },
   async del(id) {
     if (!confirm('Delete this template?')) return;
-    await api(`/api/templates/${id}`, { method: 'DELETE' });
-    closeModal(); toast('Template deleted', 'success'); render('templates');
+    try {
+      await api(`/api/templates/${id}`, { method: 'DELETE' });
+      closeModal(); toast('Template deleted', 'success'); render('templates');
+    } catch (e) { toast(e.message, 'error'); }
   }
 };
 
 // ==================== SETTINGS ====================
 async function renderSettings(el) {
-  state.config = await api('/api/config');
+  showLoading(el);
+  try {
+    state.config = await api('/api/config');
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p>Failed to load: ${esc(e.message)}</p></div>`;
+    return;
+  }
   const c = state.config;
   
   el.innerHTML = `
@@ -801,76 +1176,64 @@ async function renderSettings(el) {
     <div class="settings-page">
       <div class="settings-section">
         <h2>API Keys</h2>
-        <div class="form-group"><label>Apollo.io</label><input type="password" id="key-apollo" value="${esc(c.apiKeys?.apollo||'')}" placeholder="Enter Apollo API key"></div>
-        <div class="form-group"><label>ContactOut</label><input type="password" id="key-contactout" value="${esc(c.apiKeys?.contactout||'')}" placeholder="Enter ContactOut API key"></div>
-        <div class="form-group"><label>RocketReach</label><input type="password" id="key-rocketreach" value="${esc(c.apiKeys?.rocketreach||'')}" placeholder="Enter RocketReach API key"></div>
-        <div class="form-group"><label>Hunter.io</label><input type="password" id="key-hunter" value="${esc(c.apiKeys?.hunter||'')}" placeholder="Enter Hunter API key"></div>
-      </div>
-      <div class="settings-section">
-        <h2>Enrichment Waterfall Order</h2>
-        <div class="waterfall-list" id="waterfall-list">
-          ${(c.waterfallOrder||['apollo','contactout','rocketreach','hunter']).map((p,i) => `
-            <div class="waterfall-item" draggable="true" data-provider="${p}">
-              <span class="drag-handle">&#x2261;</span>
-              <span style="flex:1;text-transform:capitalize">${p}</span>
-              <span style="font-size:11px;color:var(--text-muted)">#${i+1}</span>
-            </div>
-          `).join('')}
+        <div class="form-group">
+          <label>Apollo.io <span style="font-size:11px;color:var(--text-muted)">(required for search & enrichment)</span></label>
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <input type="password" id="key-apollo" value="${esc(c.apiKeys?.apollo||'')}" placeholder="Enter Apollo API key" style="flex:1">
+            <button class="btn btn-sm" onclick="SettingsHub.validateApollo()" id="validate-apollo-btn">Test Key</button>
+          </div>
+          <div id="apollo-validation-result" style="font-size:11px;margin-top:4px"></div>
         </div>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">Apollo.io is the only enrichment provider currently supported. Get your API key at <a href="https://app.apollo.io/#/settings/integrations/api" target="_blank" style="color:var(--accent)">apollo.io/settings</a>.</p>
       </div>
       <div class="settings-section">
         <h2>Sender Configuration</h2>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:12px">Used for campaign email templates. Email sending integration coming soon.</p>
         <div class="form-group"><label>Sender Name</label><input type="text" id="sender-name" value="${esc(c.senderName||'')}"></div>
         <div class="form-group"><label>Sender Email</label><input type="email" id="sender-email" value="${esc(c.senderEmail||'')}"></div>
       </div>
       <button class="btn btn-primary" onclick="SettingsHub.save()">Save Settings</button>
     </div>
   `;
-  
-  // Waterfall drag and drop
-  initWaterfallDrag();
-}
-
-function initWaterfallDrag() {
-  const list = document.getElementById('waterfall-list');
-  if (!list) return;
-  let dragItem = null;
-  list.querySelectorAll('.waterfall-item').forEach(item => {
-    item.addEventListener('dragstart', () => { dragItem = item; item.style.opacity = '0.4'; });
-    item.addEventListener('dragend', () => { item.style.opacity = '1'; });
-    item.addEventListener('dragover', (e) => { e.preventDefault(); });
-    item.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (dragItem && dragItem !== item) {
-        const items = [...list.children];
-        const fromIdx = items.indexOf(dragItem);
-        const toIdx = items.indexOf(item);
-        if (fromIdx < toIdx) item.after(dragItem);
-        else item.before(dragItem);
-        // Update numbers
-        list.querySelectorAll('.waterfall-item').forEach((el,i) => {
-          el.querySelector('span:last-child').textContent = '#' + (i+1);
-        });
-      }
-    });
-  });
 }
 
 window.SettingsHub = {
   async save() {
-    const waterfallOrder = [...document.querySelectorAll('#waterfall-list .waterfall-item')].map(el => el.dataset.provider);
-    await api('/api/config', { method: 'PUT', body: {
-      apiKeys: {
-        apollo: document.getElementById('key-apollo').value,
-        contactout: document.getElementById('key-contactout').value,
-        rocketreach: document.getElementById('key-rocketreach').value,
-        hunter: document.getElementById('key-hunter').value
-      },
-      waterfallOrder,
-      senderName: document.getElementById('sender-name').value,
-      senderEmail: document.getElementById('sender-email').value
-    }});
-    toast('Settings saved', 'success');
+    try {
+      await api('/api/config', { method: 'PUT', body: {
+        apiKeys: {
+          apollo: document.getElementById('key-apollo').value,
+        },
+        waterfallOrder: ['apollo'],
+        senderName: document.getElementById('sender-name').value,
+        senderEmail: document.getElementById('sender-email').value
+      }});
+      toast('Settings saved', 'success');
+    } catch (e) { toast(e.message, 'error'); }
+  },
+  async validateApollo() {
+    const key = document.getElementById('key-apollo').value;
+    const resultEl = document.getElementById('apollo-validation-result');
+    const btn = document.getElementById('validate-apollo-btn');
+    if (!key || key.includes('••••')) {
+      resultEl.innerHTML = '<span style="color:var(--yellow)">Save your key first, then test</span>';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    resultEl.innerHTML = '';
+    try {
+      const result = await api('/api/config/validate-apollo', { method: 'POST', body: { apiKey: key } });
+      if (result.valid) {
+        resultEl.innerHTML = '<span style="color:var(--green)">✓ API key is valid</span>';
+      } else {
+        resultEl.innerHTML = `<span style="color:var(--red)">✗ Invalid key: ${esc(result.error || 'Unknown error')}</span>`;
+      }
+    } catch (e) {
+      resultEl.innerHTML = `<span style="color:var(--red)">✗ ${esc(e.message)}</span>`;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Test Key';
   }
 };
 
@@ -885,6 +1248,9 @@ function showModal(title, bodyHtml, buttons, extraClass) {
       <div class="modal-footer">${buttons.map(b => `<button class="btn ${b.primary?'btn-primary':''} ${b.danger?'btn-danger':''}" onclick="${b.action}">${b.label}</button>`).join('')}</div>
     </div>
   `;
+  // Close on Escape
+  const escHandler = (e) => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 }
 
@@ -899,6 +1265,19 @@ document.addEventListener('click', (e) => {
   if (nameEl) ProspectHub.showDetail(nameEl.dataset.id);
 });
 
+// Keyboard shortcut: Ctrl+K for search
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault();
+    location.hash = '#prospects';
+    setTimeout(() => {
+      const searchInput = document.querySelector('.search-input');
+      if (searchInput) searchInput.focus();
+    }, 100);
+  }
+});
+
 // Init
 route();
+checkFirstRun();
 })();

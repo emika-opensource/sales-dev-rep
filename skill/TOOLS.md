@@ -7,8 +7,14 @@ POST   /api/prospects              { firstName, lastName, email, phone, title, c
 PUT    /api/prospects/:id          { field: value, ... }
 DELETE /api/prospects/:id
 DELETE /api/prospects               { ids: [id1, id2, ...] }
-POST   /api/prospects/import       multipart/form-data, field: file (.csv)
-POST   /api/prospects/enrich       { prospectIds: [], providers: [] }
+POST   /api/prospects/import       multipart/form-data, field: file (.csv) → { imported, duplicates }
+POST   /api/prospects/enrich       { prospectIds: [] } (Apollo only)
+POST   /api/prospects/bulk         { prospects: [{...}, ...] } (with dedup)
+```
+
+## Search
+```
+POST   /api/search                 { query, filters: { titles[], locations[], companySizes[] } }
 ```
 
 ## ICPs
@@ -25,6 +31,7 @@ GET    /api/campaigns
 POST   /api/campaigns              { name, icpId, steps: [{ order, subject, body, delayDays }] }
 PUT    /api/campaigns/:id
 DELETE /api/campaigns/:id
+POST   /api/campaigns/:id/prospects { prospectIds: [] }
 ```
 
 ## Templates
@@ -36,10 +43,12 @@ DELETE /api/templates/:id
 ```
 Categories: cold-intro, follow-up, breakup, referral, event
 
-## Search & Config
+## Config & Status
 ```
-POST   /api/search                 { query, filters: { titles[], locations[], companySizes[] } }
 GET    /api/config
-PUT    /api/config                 { apiKeys: { apollo, contactout, rocketreach, hunter }, waterfallOrder[], senderEmail, senderName }
+PUT    /api/config                 { apiKeys: { apollo }, senderEmail, senderName }
+POST   /api/config/validate-apollo { apiKey } → { valid, error }
+GET    /api/status                 → { isFirstRun, prospectCount, icpCount, hasApiKey }
 GET    /api/analytics
+POST   /api/sample-data            → loads 25 sample prospects
 ```
