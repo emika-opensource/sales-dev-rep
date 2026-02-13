@@ -52,3 +52,23 @@ GET    /api/status                 → { isFirstRun, prospectCount, icpCount, ha
 GET    /api/analytics
 POST   /api/sample-data            → loads 25 sample prospects
 ```
+
+
+## Browser & Screenshots (Playwright)
+
+Playwright and Chromium are pre-installed. Use them for browsing websites, taking screenshots, scraping content, and testing.
+
+```bash
+# Quick screenshot
+npx playwright screenshot --full-page https://example.com screenshot.png
+
+# In Node.js
+const { chromium } = require("playwright");
+const browser = await chromium.launch();
+const page = await browser.newPage();
+await page.goto("https://example.com");
+await page.screenshot({ path: "screenshot.png", fullPage: true });
+await browser.close();
+```
+
+Do NOT install Puppeteer or download Chromium — Playwright is already here and ready to use.
