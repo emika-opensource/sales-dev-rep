@@ -101,7 +101,7 @@ app.post('/api/config/validate-apollo', async (req, res) => {
       res.json({ valid: true });
     } else {
       // Try a lightweight search as fallback health check
-      const resp2 = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
+      const resp2 = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
         body: JSON.stringify({ q_keywords: 'test', per_page: 1, page: 1 })
@@ -326,22 +326,42 @@ app.post('/api/prospects/import', upload.single('file'), (req, res) => {
 
 // --- Enrichment (Apollo only — no fake providers) ---
 async function enrichWithApollo(prospect, apiKey) {
-  const body = {
-    first_name: prospect.firstName,
-    last_name: prospect.lastName,
-    organization_name: prospect.company,
-    domain: prospect.email ? prospect.email.split('@')[1] : undefined
-  };
-  const resp = await fetch('https://api.apollo.io/api/v1/people/match', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
-    body: JSON.stringify(body)
-  });
-  if (!resp.ok) throw new Error(`Apollo API error: ${resp.status}`);
-  const data = await resp.json();
+  let data;
+  
+  // If we have an Apollo ID, use the direct lookup endpoint (much more reliable)
+  if (prospect.apolloId) {
+    const resp = await fetch('https://api.apollo.io/api/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
+      body: JSON.stringify({ id: prospect.apolloId })
+    });
+    if (!resp.ok) throw new Error(`Apollo API error: ${resp.status}`);
+    data = await resp.json();
+  }
+  
+  // Fall back to name-based matching if no Apollo ID or ID lookup failed
+  if (!data?.person) {
+    const body = {
+      first_name: prospect.firstName,
+      last_name: prospect.lastName,
+      organization_name: prospect.company,
+      domain: prospect.email ? prospect.email.split('@')[1] : undefined
+    };
+    const resp = await fetch('https://api.apollo.io/api/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) throw new Error(`Apollo API error: ${resp.status}`);
+    data = await resp.json();
+  }
+  
   if (!data.person) throw new Error('No match found');
   const p = data.person;
   return {
+    apolloId: p.id || '',
+    firstName: p.first_name || '',
+    lastName: p.last_name || '',
     email: p.email || '',
     phone: p.phone_numbers?.[0]?.sanitized_number || '',
     title: p.title || '',
@@ -374,8 +394,16 @@ app.post('/api/prospects/enrich', async (req, res) => {
     try {
       const fields = await enrichWithApollo(prospects[idx], config.apiKeys.apollo);
       
+      // Helper: detect obfuscated values like "Ri***y" or "J***n"
+      const isObfuscated = (val) => typeof val === 'string' && /\*{2,}/.test(val);
+      
       for (const [k, v] of Object.entries(fields)) {
-        if (v && !prospects[idx][k]) prospects[idx][k] = v;
+        if (!v) continue;
+        const existing = prospects[idx][k];
+        // Overwrite if empty OR obfuscated
+        if (!existing || isObfuscated(existing)) {
+          prospects[idx][k] = v;
+        }
       }
       prospects[idx].enrichmentData = {
         provider: 'apollo',
@@ -412,7 +440,7 @@ app.post('/api/search', async (req, res) => {
       per_page: filters?.perPage || 25
     };
     
-    const resp = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
+    const resp = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
       body: JSON.stringify(body)
@@ -421,6 +449,7 @@ app.post('/api/search', async (req, res) => {
     const data = await resp.json();
     
     const people = (data.people || []).map(p => ({
+      apolloId: p.id || '',
       firstName: p.first_name || '',
       lastName: p.last_name || '',
       email: p.email || '',
